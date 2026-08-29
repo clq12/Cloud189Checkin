@@ -11,6 +11,9 @@ const push = require("./push");
 const { log4js, cleanLogs, catLogs } = require("./logger");
 const tokenDir = ".token";
 
+// 是否出现过签到失败，用于控制“仅失败时推送”
+let hasError = false;
+
 sdkLogger.configure({
   isDebugEnabled: process.env.CLOUD189_VERBOSE === "1",
 });
@@ -40,6 +43,7 @@ const run = async (userName, password, userSizeInfoMap, logger) => {
       });
       await Promise.all([doUserTask(cloudClient, logger)]);
     } catch (e) {
+      hasError = true;
       if (e.response) {
         logger.log(`请求失败: ${e.response.statusCode}, ${e.response.body}`);
       } else {
@@ -104,16 +108,26 @@ async function main() {
 }
 
 (async () => {
+  let unhandledError = null;
   try {
     await main();
     //等待日志文件写入
     await delay(1000);
+  } catch (e) {
+    unhandledError = e;
   } finally {
     const logs = catLogs();
     const events = recording.replay();
     const content = events.map((e) => `${e.data.join("")}`).join("  \n");
-    push("天翼云盘自动签到任务", logs + content);
+    // 仅在签到失败（含运行异常）时推送，成功不推送
+    if (hasError || unhandledError) {
+      push("天翼云盘自动签到任务 ⚠️ 失败", logs + content);
+    }
     recording.erase();
     cleanLogs();
+    if (unhandledError) {
+      // 保持原有行为：运行异常时以非 0 退出，触发 GitHub Actions 重试
+      throw unhandledError;
+    }
   }
 })();
